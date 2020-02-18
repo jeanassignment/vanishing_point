@@ -306,30 +306,30 @@ int main(int argc, char** argv) {
 	*/
 
 	// init point id(first element in vps)
-	int key = 0;	    // proposed key point
-	int nextkey = -1;   // next key (-1:not assigned)
-	int count = 0;		// numbers of vanishing cluster
-	int chosedvp = key;		// chosen vp id
-	vector<int> cluster_vps_id;  //store id belong to this cluster
-	vector<int> vpointkey;  // all vanishing points(verified as a big cluster)
+	int key = 0;	    	   // proposed key point
+	int nextkey = -1;   	   // next key (-1:not assigned)
+	vector<int> cluster_pid;   // store point id belong to this cluster, renew with key 
 	
-
+	int lastvp = key;		   // chosen vp id
+	int count = 0;			   // numbers of vanishing cluster
+	vector<int> chosedv_pid;   // all vanishing points id (big cluster)
+	
 	while(key != -1){ // if the key is not assigned (exhausted thru points)
 		
-		vpointkey.push_back(chosedvp);
+		chosedv_pid.push_back(lastvp);
 		
 		for (size_t j = key+1; j < vps.size(); j++){  
 			double dist = vps[j] - vps[key];   //current point dist to current key
 			
 			if (dist < vicinity){ 
 				
-				cluster_vps_id.push_back(j);
+				cluster_pid.push_back(j);
 
 			}else if (nextkey == -1){ 
 				bool pass = 1;
 				double dist_to_p = 0;
-				for(size_t k = 0; k < vpointkey.size(); k++){ 
-					dist_to_p = vps[j] - vps[vpointkey[k]];	// current key to previous vanishing points
+				for(size_t k = 0; k < chosedv_pid.size(); k++){ 
+					dist_to_p = vps[j] - vps[chosedv_pid[k]];	// current key to previous vanishing points
 					if (dist_to_p < 3*vicinity){			// if too close to any of the previous points, do not propose as next key point 
 						pass = 0;
 						break;
@@ -341,17 +341,18 @@ int main(int argc, char** argv) {
 			}
 		}
 
-		if(cluster_vps_id.size() > (vps.size()/min_ratio)){  // when the cluster size is large enough -> vanishing point
+		if(cluster_pid.size() > (vps.size()/min_ratio)){  // when the cluster size is large enough -> vanishing point
 			
 			vps[key].draw(image_result, colors[count%6]);
 			merged_lines[vps[key].l1()].draw(image_result, colors[count%6]);
 			merged_lines[vps[key].l2()].draw(image_result, colors[count%6]);
 
-			for (size_t j = 0; j < cluster_vps_id.size(); j++){
-			   merged_lines[vps[cluster_vps_id[j]].l1()].draw(image_result, colors[count%6]);
-			   merged_lines[vps[cluster_vps_id[j]].l2()].draw(image_result, colors[count%6]);
+			for (size_t j = 0; j < cluster_pid.size(); j++){
+			   merged_lines[vps[cluster_pid[j]].l1()].draw(image_result, colors[count%6]);
+			   merged_lines[vps[cluster_pid[j]].l2()].draw(image_result, colors[count%6]);
+			   
 			}
-			chosedvp = key;
+			lastvp = key;
 			count++;
 		}
 		
@@ -359,7 +360,7 @@ int main(int argc, char** argv) {
 		
 		key = nextkey;
 		nextkey = -1;
-		cluster_vps_id.clear();
+		cluster_pid.clear();
 		
 	}
 	
