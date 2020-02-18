@@ -23,8 +23,8 @@ The algorithm find candidate points, calculate its sum of orthogonal distance to
 7. Sort points with residual (higher potential candidates will be sorted to in front)
 8. Find Big Clusters of Candidate
 	- Set first candidate as key point of a cluster
-	- Include candidate points within 10px range of key point
-	- If more than 1/50 of all the intersection points are grouped to this cluster, choose the key point as the first vanishing point.
+	- Include candidate points in the vicinity of key point into the cluster
+	- If enough intersection points are grouped to this cluster, choose the key point as the first vanishing point.
 	- Find the next ungrouped candidate as a key point of the new cluster, repeat above steps
 9. If no candidate points available, stop and output. 
 
@@ -40,7 +40,7 @@ The algorithm find candidate points, calculate its sum of orthogonal distance to
 |Hough Transform| Value | Description|
 | --- | --- |---|
 |hough_threshold| 150|[number of intersect] minimum number to agree to a line |
-|min_line_len | 150  |[px] minimum detected length of line, bigger to avoid noise|
+|min_line_len | 100  |[px] minimum detected length of line, bigger to avoid noise|
 |max_line_gap | 10   |[px] max gap to differentiate lines, higher to get more continuous lines, slower|
 
 
@@ -53,7 +53,7 @@ The algorithm find candidate points, calculate its sum of orthogonal distance to
 |Vanishing Point| Value | Description|
 | --- | --- |---|
 |vicinity | 10| [px] points lies within this vicinity of a proposed point are same cluster|
-| min_ratio | 50|[ratio of points] define vanishing points (cluster includes more than certain ratio of points), higher the less points|
+| min_ratio | 100|[ratio of points] define vanishing points (cluster includes more than certain ratio of points), higher the less points|
 
 ## Usage
 
@@ -66,7 +66,7 @@ make
 result will be stored in result folder
 
 ## Results
-<img src="https://github.com/jean821203/vanishingpoint/blob/master/result/result_5D4L1L1D_L.jpg" width=100%/>
+<img src="https://github.com/jeanassignment/vanishing_point/blob/master/result/result_5D4L1L1D_L.jpg" width=100%/>
 
-<img src="https://github.com/jean821203/vanishingpoint/blob/master/result/result_5D4KVN2Y_R.jpg" width=100%/>
+<img src="https://github.com/jeanassignment/vanishing_point/blob/master/result/result_5D4KVN2Y_R.jpg" width=100%/>
 
