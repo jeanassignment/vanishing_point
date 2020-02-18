@@ -24,17 +24,20 @@ float canny_highthreshold = canny_lowthreshold * 3;  //Canny’s recommendation 
 
 // hough transform
 int hough_threshold = 150; 		// [number of intersect] minimum number to agree to a line 
-int min_line_len = 100;	   		// [px] minimum detected length of line, bigger to avoid noise
+int min_line_len = 50;	   		// [px] minimum detected length of line, bigger to avoid noise
 int max_line_gap = 10;			// [px] max gap to differentiate lines, higher to get more continuous lines, slower
 
 // remove/merge line criteria
 float vertical_deg = 85;   		// [deg] filter out line angle bigger than this
-float merge_line_ang = 0.005;   	// [deg] intersect smaller than this angle 
-float merge_line_dist = 3; 	    // [px] orthogonal dist smaller than this distance 
+float merge_line_ang = 0.5;   	// [deg] intersect smaller than this angle 
+float merge_line_dist = 2; 	    // [px] orthogonal dist smaller than this distance 
+
+// voting for points
+int vote_dist = 5;  			// rough 
 
 // vanishing point criteria
-int vicinity = 10; 			    // [px] points lies within this vicinity of a proposed point are same cluster
-int min_ratio = 100; 			// [ratio of points] define vanishing points (cluster includes more than certain ratio of points), higher the less points
+int vicinity = 5; 			    // [px] points lies within this vicinity of a proposed point are same cluster (should be bigger than merge_line_dist)
+int min_ratio = 50; 			// [ratio of points] relate to avg line angles, 300 for 5DK, 50 for 5DL image
 
 // drawing colors: cyan, green, red, magenta, blue, yellow
 cv::Scalar colors[6] = {cv::Scalar(0,255,0), cv::Scalar(255,255,0), cv::Scalar(0,0,255), cv::Scalar(0,255,255) ,cv::Scalar(255,0,0), cv::Scalar(255,0,255)};
@@ -49,7 +52,10 @@ class LineSegment{
 	private: 
 		cv::Point left, right;  // end points of line segment
 		cv::Vec3f params;    	// 3 parameters a,b,c of line eq.
-		float m; 				//gradient m = -a/b
+		float m; 				//gradient m = -a/b (slope)
+
+		int vanishing_point = -1;	// agreed vanishing line, -1: unset
+		float vanishing_dist = -1;
 		
 	public:
 
@@ -75,7 +81,10 @@ class LineSegment{
 
 		};
 		
+		float get_angle(){
 		
+			return abs(atan2(right.y - left.y , abs(right.x - left.x)));
+		}
 		cv::Vec3f getlineparam(){
 			return params;
 		};
@@ -85,7 +94,24 @@ class LineSegment{
 		cv::Point rpoint(){
 			return right;
 		}
+		int get_vp(){
+			return vanishing_point;
+		}
 
+		void set_vp(int id, float dist){
+			vanishing_dist = dist;
+			vanishing_point = id;
+		}
+
+		bool vp_set(){
+			if (vanishing_point != -1){
+				return true;
+			}
+		}
+
+		float vp_dist(){
+			return vanishing_dist;
+		}
 
 		float crossangle(const LineSegment& l2){
 			return abs(atan2(l2.m-m, (1+m*l2.m)));
@@ -122,33 +148,71 @@ bool isEqual (const LineSegment& l1, const LineSegment& l2){
 	// orthogonal distance  |ax+by+c|/sqrt(a*a+b+b)
 	float dist = abs(l1.params[0] * l2.left.x + l1.params[1] * l2.left.y + l1.params[2])/sqrt(l1.params[0]*l1.params[0] + l1.params[1]*l1.params[1]);  
 	float dist2 = abs(l1.params[0] * l2.right.x + l1.params[1] * l2.right.y + l1.params[2])/sqrt(l1.params[0]*l1.params[0] + l1.params[1]*l1.params[1]); 
- 
-	if (max(dist, dist2) < merge_line_dist && ang < (merge_line_ang / 180 * CV_PI)){
+	
+	// y coordinate distance 
+	float ydist;
+	if (l1.left.y > l2.right.y){  //l1 is at right
+		ydist = l1.left.y - l2.right.y;
+	}else{
+		ydist = l2.left.y - l1.right.y;
+	}
+
+	if (max(dist, dist2) < merge_line_dist && ang < (merge_line_ang / 180 * CV_PI) && ydist < 2*max_line_gap){
 		return true;
 	}
 		return false;
 };
 
-class VanishingPoint{
+class CrossPoint{
 	private:
 		cv::Point p;
-		double residuals = 0;
+		int point_id;			 // in cps vector "after sort!"
+		int votes = 0;			 // lines roughly agree to the point
 		int line1_id, line2_id;  // the line combination
+		
+		bool vp = 0;		 	// if it's a vanishing point
+		vector<int> vp_lid;  	// all the lines strongly agree to this vanishing point
 		
 	public:
 	    // int group_id = -1;  // -1: ungrouped
-		VanishingPoint(cv::Point pt):
+		CrossPoint(cv::Point pt):
 			p(pt)
 		{ 
 			
 		}
 
-		void set_residuals(vector<LineSegment> lines){
-			// calculate accumulated point to line distances
+		void set_pointid(int id){  //its position aftering sorting
+			point_id = id;
+		}
+
+		void set_vp(){
+			vp = 1;
+		}
+
+		bool is_vp(){
+			return vp;
+		}
+
+		vector<int> get_vp_lid(){
+			return vp_lid;
+		}
+		
+		void add_vp_lid(int lineid){
+			vp_lid.push_back(lineid);
+		}
+
+		void remove_vp_lid(int lineid){
+			vector<int>::iterator it = find(vp_lid.begin(), vp_lid.end(), lineid);
+			vp_lid.erase(it);
+		}
+
+		void lines_vote(vector<LineSegment> lines){
+			
 			for (size_t k = 0; k < lines.size(); k++ ){
-				cv::Vec3f params = lines[k].getlineparam();
-				double a = params[0], b = params[1], c = params[2];
-				residuals += abs(a*p.x + b*p.y + c) / sqrt(a*a + b*b);
+				float dist = this->dist2line(lines[k]);
+				if (dist < vote_dist){
+					votes++;
+				}
 			}
 		}
 
@@ -159,14 +223,19 @@ class VanishingPoint{
 		int l1(){ return line1_id;}
 		int l2(){ return line2_id;}
 		
+		float dist2line(LineSegment l){
+			cv::Vec3f params = l.getlineparam();
+			double a = params[0], b = params[1], c = params[2];
+			return abs(a*p.x + b*p.y + c) / sqrt(a*a + b*b);
+		}
 
-		bool operator < (VanishingPoint& B){
-        	if (residuals < B.residuals) {
+		bool operator < (CrossPoint& B){
+        	if (votes > B.votes) {
             	return true;
         	}else return false;
 		}
 
-		double operator - (VanishingPoint& p2){
+		double operator - (CrossPoint& p2){
 		    double distance = sqrt((p2.p.x - p.x)*(p2.p.x - p.x)  + (p2.p.y - p.y)*(p2.p.y - p.y));
 		}
 		void draw(cv::Mat img, cv::Scalar color){
@@ -189,7 +258,7 @@ int main(int argc, char** argv) {
 	cv::Mat image_detected, image_reduced, image_result; // hough, merged, vanishing point 
 
 	//-----1. Preprocess Image-----
-	string filename = argv[1]; 
+	string filename = "5D4L1L1D_L.jpg";   //caution!!  5D4KVN2Y_R: min_ratio set to 300, 5D4L1L1D_L:50 (not good, need to find relation of image line angle to min_ratio)
 	image = cv::imread(filename, cv::IMREAD_COLOR);
 	if (!image.data) { return 0; }							// check img
 
@@ -227,7 +296,7 @@ int main(int argc, char** argv) {
 			line( image_detected, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]), colors[2], 5, cv::LINE_AA);
 		}else{
 			LineSegment line(p_lines[i]);
-			line.draw(image_detected, colors[4]);
+			line.draw(image_detected, colors[1]);
 			detected_lines.push_back(line);
 		}
     }
@@ -245,6 +314,7 @@ int main(int argc, char** argv) {
 	}
 
 	// merge lines (find left-most, right-most points in same group -> new linesegments)
+	float avg_angle = 0;
 	for (size_t i = 0; i< lmap.size(); i++){  //each group
 		
 		cv::Point left_most(0, image.cols), right_most(0, 0);
@@ -260,9 +330,13 @@ int main(int argc, char** argv) {
 			}
 		}
 		LineSegment merged_line(cv::Vec4i(left_most.x, left_most.y, right_most.x, right_most.y));
+		avg_angle += merged_line.get_angle() * 180 / CV_PI;
 		merged_line.draw(image_reduced, colors[1]);
 		merged_lines.push_back(merged_line);
 	}
+	avg_angle/=merged_lines.size();
+	// calculate average line angle
+	
     
 	cv::namedWindow("Reduced", cv::WINDOW_NORMAL);		// draw 
  	cv::resizeWindow("Reduced", 800, 800);
@@ -272,9 +346,11 @@ int main(int argc, char** argv) {
 	
 	//-----4. Points Proposal & Sort-----
 	// points container
-	vector<VanishingPoint> vps;
+	vector<CrossPoint> cps;
+	int point_id = 0;
 	
 	// each intersection of two lines (i,j)
+	int ls = merged_lines.size();
     for( size_t i = 0; i < merged_lines.size(); i++ )
     {
 	  	cv::Point intersection;
@@ -283,79 +359,93 @@ int main(int argc, char** argv) {
 			intersection = merged_lines[i].crosspoint(merged_lines[j]);
 			
 			if (intersection.x > 0 && intersection.x < image.rows && intersection.y > 0 && intersection.y < image.cols){ // intersect within images
-				VanishingPoint vp(intersection);
-				vp.set_lines(i,j);
-				vp.set_residuals(merged_lines);  //(accumulated distance to all lines)
-				vps.push_back(vp);
+				CrossPoint cp(intersection);
+				cp.set_lines(i,j);
+				cp.lines_vote(merged_lines);  //(accumulated distance to all lines)
+				cps.push_back(cp);
+				point_id++;
 			}
 		}
     }
 	
 	// sort with residuals (i.e. first point = main vanishing point)
-	sort(vps.begin(), vps.end());
-	
+	sort(cps.begin(), cps.end());
+	for (size_t i = 0; i < cps.size(); i++){
+		cps[i].set_pointid(i);
+	}
 	
 	//----- 5. Find Vanishing Point (Clusters)-----
 	
 	/*  method: 
-		a. use first element in sorted "vps" as key point of the first cluster
-		b. loop thru all points in "vps", group points within vicinity to this cluster
+		a. use first element in sorted "cps" as key point of the first cluster
+		b. loop thru all points in "cps", group points within vicinity to this cluster
 		c. if cluster is big enough --> vanishing point
-		d. use next ungrouped point in "vps" and far from exsiting vanishing points
+		d. use next ungrouped point in "cps" and far from exsiting vanishing points
 		e. go to b and repeat, till no nextkey available
 	*/
 
-	// init point id(first element in vps)
+	// init point id(first element in cps)
 	int key = 0;	    	   // proposed key point
 	int nextkey = -1;   	   // next key (-1:not assigned)
 	vector<int> cluster_pid;   // store point id belong to this cluster, renew with key 
 	
-	int lastvp = key;		   // chosen vp id
-	int count = 0;			   // numbers of vanishing cluster
-	vector<int> chosedv_pid;   // all vanishing points id (big cluster)
+	int count = 0;			   	 // numbers of vanishing cluster
+	vector<int> vanishing_pid;   // all vanishing points id (big cluster)
 	
 	while(key != -1){ // if the key is not assigned (exhausted thru points)
 		
-		chosedv_pid.push_back(lastvp);
 		
-		for (size_t j = key+1; j < vps.size(); j++){  
-			double dist = vps[j] - vps[key];   //current point dist to current key
+		for (size_t j = key+1; j < cps.size(); j++){  
+			double dist = cps[j] - cps[key];   //current point dist to current key
 			
 			if (dist < vicinity){ 
-				
 				cluster_pid.push_back(j);
-
 			}else if (nextkey == -1){ 
-				bool pass = 1;
-				double dist_to_p = 0;
-				for(size_t k = 0; k < chosedv_pid.size(); k++){ 
-					dist_to_p = vps[j] - vps[chosedv_pid[k]];	// current key to previous vanishing points
-					if (dist_to_p < 3*vicinity){			// if too close to any of the previous points, do not propose as next key point 
-						pass = 0;
-						break;
-					}
-				}
-				if (pass == 1){	// propose as next key point
-					nextkey = j;
-				}
+				nextkey = j;	
 			}
 		}
+		int s = cluster_pid.size();
+		if(cluster_pid.size() > cps.size()/min_ratio){  // when the cluster size is large enough -> vanishing point
+			cps[key].set_vp();
+			vanishing_pid.push_back(key);
 
-		if(cluster_pid.size() > (vps.size()/min_ratio)){  // when the cluster size is large enough -> vanishing point
-			
-			vps[key].draw(image_result, colors[count%6]);
-			merged_lines[vps[key].l1()].draw(image_result, colors[count%6]);
-			merged_lines[vps[key].l2()].draw(image_result, colors[count%6]);
+			// all points in cluster
+			for (size_t i = 0; i < cluster_pid.size(); i++){
+				// two lines
+				int l1 = cps[cluster_pid[i]].l1();
+				int l2 = cps[cluster_pid[i]].l2();
+				
+				// key point distance to these lines
+				float dist1 = cps[key].dist2line(merged_lines[l1]);
+				float dist2 = cps[key].dist2line(merged_lines[l2]);
 
-			for (size_t j = 0; j < cluster_pid.size(); j++){
-			   merged_lines[vps[cluster_pid[j]].l1()].draw(image_result, colors[count%6]);
-			   merged_lines[vps[cluster_pid[j]].l2()].draw(image_result, colors[count%6]);
-			   
+				// update line1
+				if (!merged_lines[l1].vp_set()){	// if the line not assigned to any vp yet
+					merged_lines[l1].set_vp(key, dist1);
+					cps[key].add_vp_lid(l1);
+				}else if(dist1 < merged_lines[l1].vp_dist()){
+					cps[merged_lines[l1].get_vp()].remove_vp_lid(l1); // remove from the previous agreed vp
+					cps[key].add_vp_lid(l1);
+					merged_lines[l1].set_vp(key, dist1);
+				}
+				// update line2
+				if (!merged_lines[l2].vp_set()){	// if the line not assigned to any vp yet
+					merged_lines[l2].set_vp(key, dist2);
+					cps[key].add_vp_lid(l2);
+				}else if(dist1 < merged_lines[l2].vp_dist()){
+					cps[merged_lines[l2].get_vp()].remove_vp_lid(l2); // remove from the previous agreed vp
+					cps[key].add_vp_lid(l2);
+					merged_lines[l2].set_vp(key, dist2);
+				}
+
 			}
-			lastvp = key;
+
+			
+
 			count++;
 		}
-		
+
+			
 		// update
 		
 		key = nextkey;
@@ -364,7 +454,21 @@ int main(int argc, char** argv) {
 		
 	}
 	
+	// draw for all vpoint
+		for (size_t i = 0; i < vanishing_pid.size(); i++){
+			int pid =vanishing_pid[i];
+			vector<int> lid = cps[pid].get_vp_lid();
+			
+			// itself and its line
+			cps[pid].draw(image_result, colors[i%6]);
+			merged_lines[cps[pid].l1()].draw(image_result, colors[i%6]);
+			merged_lines[cps[pid].l2()].draw(image_result, colors[i%6]);
 
+			// other lines agree to it
+			for (size_t j = 0; j < lid.size(); j++){
+				merged_lines[lid[j]].draw(image_result, colors[i%6]);
+			}
+		}
 	//****************************************************************************
 	//  Logs
 	//****************************************************************************
@@ -377,8 +481,8 @@ int main(int argc, char** argv) {
 	cout << "reduced lines (after merging): " << merged_lines.size()<< endl;
 	cout << endl;
 	cout << "-----------Vanishing Points-----------"<< endl;
-	cout << "proposed points: " << vps.size()<<endl;
-	cout << "clusters > 1/" << min_ratio <<" points agrees ( "<< vps.size()/min_ratio <<" points lies in ± "<< vicinity <<" px range of center): " << count <<endl;
+	cout << "proposed points: " << cps.size()<<endl;
+	cout << "clusters > 1/" << min_ratio <<" points agrees ( "<< cps.size()/min_ratio <<" points lies in ± "<< vicinity <<" px range of center): " << count <<endl;
 	
 
 	cv::namedWindow("Result", cv::WINDOW_NORMAL);
